@@ -1,0 +1,189 @@
+---
+title: "An example data cleaning from raw to processed data"
+author: "Marton Kovacs"
+date: '2020.04.28 '
+output: html_document
+---
+
+# Loading packages
+
+```{r}
+library(tidyverse)
+library(skimr)
+```
+
+# Import custom
+
+```{r}
+source("utils.R")
+```
+
+# Importing data
+
+```{r}
+raw <- read_tsv("data/raw/primeprobe_data.tsv")
+```
+
+# Filtering rules
+
+* Excluding practice trials
+* Excluding participants outside of the 18-99 age range
+* Excluding not correct trials
+
+# Exploring data
+
+Checking the column names.
+
+```{r}
+colnames(raw)
+```
+
+Checking the summary of the age variable.
+
+```{r}
+raw %>% 
+  select(age) %>% 
+  skim()
+```
+
+Check if all the participants have the correct number of pratice and test trials.
+
+** practice = 24
+** test = 388
+** total = 412
+
+```{r}
+raw %>% 
+  group_by(participant_id) %>% 
+  count() %>%
+  mutate(complete = case_when(n == 412 ~ "complete",
+                              TRUE ~ "incomplete")) %>% 
+  group_by(complete) %>% 
+  count()
+```
+
+# Creating new variables
+
+Create variable for storing whether a response was correct or not.
+
+```{r}
+raw <-
+  raw %>% 
+  mutate(isCorrect = case_when(responseTarget == responseContent ~ 1L,
+                               responseTarget != responseContent ~ 0L,
+                               TRUE ~ NA_integer_))
+```
+
+Create a vaiable for storing the congruency of the previous trial.
+
+```{r}
+raw <-
+  raw %>%
+  mutate(isPrevCongruent = case_when(trialId < 24 ~ NA_integer_,
+                                     trialId > 24 & lag(isCongruent) == 1L ~ 1L,
+                                     trialId > 24 & lag(isCongruent) == 0L ~ 0L))
+```
+
+Create response time variable.
+
+```{r}
+raw <-
+  raw %>% 
+  mutate(rt = case_when(responseContent != "TIMEOUT" ~ responseTime - probeOnset,
+                        responseContent == "TIMEOUT" ~ NA_real_))
+```
+
+# Filtering
+
+Excluding participants outside of our age range.
+
+```{r}
+raw <-
+  raw %>%
+  mutate(ageDrop = case_when(age < 18 ~ 1L,
+                             age > 99 ~ 1L,
+                             TRUE ~ 0L)) %>% 
+  filter(ageDrop != 1L)
+```
+
+Excluding practice trials.
+
+```{r}
+raw <-
+  raw %>%
+  filter(isPractice == 0L)
+```
+
+Excluding incorrect trials.
+
+```{r}
+raw <-
+  raw %>%
+  filter(isCorrect == 1L)
+```
+
+Exclude participants with incomplete trial numbers.
+
+```{r}
+raw <-
+  raw %>%
+  filter(participant_id %ni% c(381, 392))
+```
+
+Exclude first trials.
+
+```{r}
+raw <-
+  raw %>%
+  filter(trialId != 24L)
+```
+
+# Figures
+
+```{r}
+# Prepare data for plotting
+cse_plot_rt_data <- 
+  raw %>% 
+  mutate(isPrevCongruent = case_when(isPrevCongruent ==  0L ~ "Incongruent",
+                                     isPrevCongruent ==  1L ~ "Congruent"),
+         isCongruent = case_when(isCongruent ==  0L ~ "Incongruent",
+                                 isCongruent ==  1L ~ "Congruent")) %>%
+  group_by(participant_id, isPrevCongruent, isCongruent) %>% 
+  summarise(participant_mean_rt = mean(rt, na.rm = T)) %>% 
+  group_by(isPrevCongruent, isCongruent) %>% 
+  summarise(N = n(),
+            mean_rt = mean(participant_mean_rt, na.rm = T),
+            sd_rt = sd(participant_mean_rt, na.rm = T),
+            se_rt = sd_rt / sqrt(N))
+
+# Create the plot
+cse_plot_rt <- 
+  cse_plot_rt_data %>% 
+  ggplot() +
+  aes(x = isPrevCongruent,
+                 y = mean_rt,
+                 shape = isCongruent,
+                 group = isCongruent) +
+  geom_path() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_rt - se_rt,
+                    ymax = mean_rt + se_rt),
+                width = .1) +
+  scale_shape_manual(values = c(4, 16)) +
+  scale_x_discrete(expand = c(1, 0)) +
+  xlab("Congruency of the previous trial")+
+  ylab("Reaction time") +
+  guides(shape = guide_legend(title = "Congruency of \n the current trial")) +
+  papaja::theme_apa() +
+  theme(legend.position = c(0.85, 0.5),
+        axis.line = element_line(color = "black"))
+
+# See the plot
+cse_plot_rt
+```
+
+## Saving the figure
+
+```{r}
+ggsave("figures/rt_cse.png", width = 14.4, height = 8, plot = last_plot())
+```
